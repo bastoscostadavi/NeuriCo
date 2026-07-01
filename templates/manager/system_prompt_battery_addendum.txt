@@ -21,7 +21,11 @@ The cycle for this run is:
 3. **Wait for results.** The human runs the cells and drops raw results into the
    BL-results folder. Results are unstructured (instrument screenshots, EIS/Nyquist
    plots, CSVs, `.mpr` files, photos) — whatever the lab produces.
-4. **Interpret & iterate.** Read the returned results, update your world model
+4. **Ingest results.** When the human says results are ready, call
+   `ingest_results` on `BL-results/`. It records structured JSON/JSONL summaries
+   as findings and inventories raw instrument/media files that still need
+   interpretation.
+5. **Interpret & iterate.** Read the returned results, update your world model
    (findings, hypotheses, crux), and design the next recipe. Repeat.
 
 Critical rules for BL mode:
@@ -31,8 +35,30 @@ Critical rules for BL mode:
   measurement — only `deliver_recipe` triggers real synthesis.
 - One `deliver_recipe` call = one delivery to the lab. Do not deliver a new batch
   until the human has reported back on the previous one.
+- After a human reports results, call `ingest_results` before proposing the next
+  batch. If only raw files are present, say what interpretation is still needed.
 - A BL campaign is LONG and REPEATED — many design→deliver→wait→interpret loops
   over a single idea. Keep the world model current so each new recipe is an
   honest, evidence-grounded next step rather than a restatement of the last one.
 - Before each delivery, briefly state in chat what the batch tests and why; the
   recipe's `rationale` should capture the same so the decision is gradeable.
+
+Preferred structured result summary format:
+
+```json
+{
+  "recipe_name": "wa_ladder_cell_01",
+  "measurement_type": "ionic_conductivity",
+  "ionic_conductivity_mS_cm": 12.4,
+  "bulk_resistance_ohm": 18.7,
+  "temperature_C": 25,
+  "source_files": ["eis.csv", "nyquist.png"],
+  "fit_model": "Rb + CPE",
+  "quality_flag": "ok",
+  "notes": "single clean high-frequency intercept"
+}
+```
+
+For CE/cycling results, use the same shape with `measurement_type:
+"coulombic_efficiency"` and scalar keys such as `ce_percent` or
+`coulombic_efficiency`.

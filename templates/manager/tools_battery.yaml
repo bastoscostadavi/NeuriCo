@@ -53,3 +53,25 @@ tools:
       On success: confirmation that round N was written and the human's reply
       after they ran the wet-lab experiment. On validation failure: the list of
       problems to fix (nothing is delivered).
+
+  - name: ingest_results
+    description: |
+      Read returned BatteryLab wet-lab results from BL-results/ and record them
+      in the research world model. Use this after the human says results are
+      ready or after check_workspace shows new files under BL-results/.
+
+      The first supported machine-readable input is a JSON or JSONL result
+      summary produced by the human or a BatteryLab-side parser. Raw instrument
+      files, plots, photos, and spreadsheets are also inventoried, but they are
+      recorded as files needing human/parser interpretation rather than parsed
+      into metrics automatically.
+    parameters:
+      path:
+        type: string
+        description: |
+          Relative path inside the workspace to scan. Defaults to BL-results.
+          The path may be a directory or one JSON/JSONL result summary file.
+        required: false
+    returns: |
+      A summary of structured result records ingested into ResearchState, raw
+      files found for later interpretation, and any malformed summary files.

@@ -23,6 +23,12 @@ from interactive.session_state import SessionState
 # a small tolerance rather than rejecting otherwise-fine recipes.
 _V_SUM_TOL = 0.02
 
+_RESULT_JSON_EXTS = {".json", ".jsonl"}
+_RAW_RESULT_EXTS = {
+    ".csv", ".txt", ".tsv", ".mpr", ".mpt", ".xlsx", ".xls",
+    ".png", ".jpg", ".jpeg", ".tif", ".tiff", ".pdf",
+}
+
 
 def _is_number(val: Any) -> bool:
     """True for a real numeric value. Excludes bool, which is an int subclass in
@@ -128,6 +134,74 @@ def validate_recipes(recipes: List[Any]) -> tuple:
     return cleaned, errors
 
 
+def _safe_rel(path: Path, root: Path) -> str:
+    try:
+        return str(path.relative_to(root))
+    except ValueError:
+        return str(path)
+
+
+def _load_json_records(path: Path) -> tuple:
+    """Load result summary records from JSON or JSONL.
+
+    Returns (records, error). A JSON file may contain one result object or a list
+    of result objects. JSONL files are interpreted as one object per non-empty
+    line. The shape is intentionally permissive because the BatteryLab side is
+    still converging on its parser output.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception as e:
+        return [], f"{path.name}: could not read file ({e})"
+
+    try:
+        if path.suffix.lower() == ".jsonl":
+            records = []
+            for line_no, line in enumerate(text.splitlines(), 1):
+                line = line.strip()
+                if not line:
+                    continue
+                item = json.loads(line)
+                if not isinstance(item, dict):
+                    return [], f"{path.name}:{line_no}: each JSONL row must be an object"
+                records.append(item)
+            return records, ""
+
+        data = json.loads(text)
+    except json.JSONDecodeError as e:
+        return [], f"{path.name}: invalid JSON ({e})"
+
+    if isinstance(data, dict):
+        return [data], ""
+    if isinstance(data, list) and all(isinstance(x, dict) for x in data):
+        return data, ""
+    return [], f"{path.name}: expected a JSON object or list of objects"
+
+
+def _result_record_label(record: Dict[str, Any], source: str) -> str:
+    recipe = str(record.get("recipe_name") or record.get("cell_id") or "unknown recipe")
+    measurement = str(record.get("measurement_type") or record.get("metric") or "measurement")
+
+    values = []
+    for key in [
+        "ionic_conductivity_mS_cm", "bulk_resistance_ohm", "coulombic_efficiency",
+        "ce_percent", "temperature_C",
+    ]:
+        if key in record:
+            values.append(f"{key}={record[key]}")
+    value_text = "; ".join(values) if values else "no scalar metric reported"
+    return f"{recipe}: {measurement} ({value_text}) from {source}"
+
+
+def _result_record_insight(record: Dict[str, Any]) -> str:
+    pieces = []
+    for key in ["notes", "interpretation", "fit_model", "quality_flag"]:
+        val = record.get(key)
+        if val:
+            pieces.append(f"{key}: {val}")
+    return "; ".join(str(p) for p in pieces)
+
+
 class ToolExecutor:
     """
     Executes tools called by the manager LLM.
@@ -181,6 +255,7 @@ class ToolExecutor:
             "assess": self._assess,
             "design_panel": self._design_panel,
             "deliver_recipe": self._deliver_recipe,
+            "ingest_results": self._ingest_results,
         }
 
         handler = handlers.get(tool_name)
@@ -522,6 +597,100 @@ class ToolExecutor:
                     "but the session ended before the human replied.")
         return (f"Recipe round {round_n} delivered ({names}). "
                 f"Human replied: {response}")
+
+    def _ingest_results(self, args: Dict[str, Any]) -> str:
+        """Battery-lab mode: ingest returned wet-lab result summaries.
+
+        The BatteryLab side already has a stable recipe handoff: the [B]atch
+        loader consumes solvency-style recipe JSON and links each assembled cell
+        to its recipe name/payload. Potentiostat outputs are still instrument-
+        specific, so this first NeuriCo ingest path accepts a structured
+        JSON/JSONL summary next to any raw files and records both in the world
+        model.
+        """
+        rel_path = args.get("path", "BL-results")
+        if not isinstance(rel_path, str) or not rel_path.strip():
+            rel_path = "BL-results"
+        rel_path = rel_path.strip()
+
+        target = self.work_dir / rel_path
+        if not target.exists():
+            return (
+                f"No wet-lab results found at {rel_path}. Ask the human to drop "
+                "result summaries or raw instrument files there, then retry."
+            )
+
+        try:
+            target.resolve().relative_to(self.work_dir.resolve())
+        except ValueError:
+            return f"Error: Path '{rel_path}' is outside the workspace"
+
+        files = [target] if target.is_file() else [p for p in target.rglob("*") if p.is_file()]
+        if not files:
+            return f"Directory '{rel_path}' is empty; no wet-lab results to ingest."
+
+        json_files = sorted(p for p in files if p.suffix.lower() in _RESULT_JSON_EXTS)
+        raw_files = sorted(p for p in files if p not in json_files)
+
+        ingested = []
+        errors = []
+        for jf in json_files:
+            source = _safe_rel(jf, self.work_dir)
+            records, err = _load_json_records(jf)
+            if err:
+                errors.append(err)
+                continue
+            for record in records:
+                label = _result_record_label(record, source)
+                fid = self.research.add_finding(
+                    f"Wet-lab result ingested: {label}",
+                    kind="result",
+                    insight=_result_record_insight(record),
+                    evidence=[{"source": source, "record": record}],
+                    author="ingest_results",
+                )
+                ingested.append((fid, label))
+
+        if raw_files:
+            raw_list = [_safe_rel(p, self.work_dir) for p in raw_files]
+            self.research.add_finding(
+                f"Wet-lab raw files available for interpretation: {len(raw_files)} file(s)",
+                kind="note",
+                insight=", ".join(raw_list[:12]) + (" ..." if len(raw_list) > 12 else ""),
+                evidence=[{"files": raw_list}],
+                author="ingest_results",
+            )
+
+        if ingested:
+            self.research.set_fields(
+                current_best=f"{len(ingested)} wet-lab result record(s) ingested from {rel_path}",
+                crux="Interpret returned BatteryLab measurements and decide the next recipe batch.",
+            )
+            self.session.update_findings(phase="wet_lab_results_ingested")
+
+        recognized_raw = [p for p in raw_files if p.suffix.lower() in _RAW_RESULT_EXTS]
+        unknown_raw = [p for p in raw_files if p.suffix.lower() not in _RAW_RESULT_EXTS]
+
+        parts = []
+        if ingested:
+            parts.append("Ingested structured wet-lab result records:")
+            parts.extend(f"- {fid}: {label}" for fid, label in ingested)
+        else:
+            parts.append("No structured JSON/JSONL result records were ingested.")
+
+        if raw_files:
+            parts.append(
+                f"Raw files found: {len(raw_files)} "
+                f"({len(recognized_raw)} recognized instrument/media extension(s), "
+                f"{len(unknown_raw)} other)."
+            )
+            parts.append("Raw files were recorded as a note for human/parser follow-up.")
+
+        if errors:
+            parts.append("Result summary files with problems:")
+            parts.extend(f"- {e}" for e in errors)
+
+        return "\n".join(parts)
 
     def _update_session(self, args: Dict[str, Any]) -> str:
         """Update session state."""

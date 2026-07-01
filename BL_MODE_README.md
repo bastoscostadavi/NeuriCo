@@ -152,10 +152,36 @@ Status:
 - [x] Recipe schema + validation (mL units, `v` sums to 1, numeric `s`/`a`).
 - [x] `deliver_recipe` tool (write + pause), battery manager prompt, domain routing.
 - [x] Normal-mode recipe generation via idea `expected_outputs`.
-- [ ] `ingest_results` — read arbitrary files from `BL-results/` (EIS/Nyquist
-      screenshots, CSVs, `.mpr`, photos) and update the world model.
+- [x] `ingest_results` — read JSON/JSONL result summaries from `BL-results/`,
+      inventory raw EIS/Nyquist screenshots, CSVs, `.mpr`, photos, and update
+      the world model.
 - [ ] Auto-sync delivered recipes to a shared `BL-recipes/` folder.
 - [ ] Direct link to the BatteryLab robot (today the human relays recipes/results).
+
+### Result summary format
+
+BatteryLab's stable input interface is the `[B]atch` recipe JSON loader. The
+output side is still lab/instrument-specific, so BL mode accepts a small
+structured summary file beside the raw potentiostat files. Put one JSON object,
+a JSON array, or one JSON object per line (`.jsonl`) under `BL-results/`:
+
+```json
+{
+  "recipe_name": "wa_ladder_cell_01",
+  "measurement_type": "ionic_conductivity",
+  "ionic_conductivity_mS_cm": 12.4,
+  "bulk_resistance_ohm": 18.7,
+  "temperature_C": 25,
+  "source_files": ["eis.csv", "nyquist.png"],
+  "fit_model": "Rb + CPE",
+  "quality_flag": "ok",
+  "notes": "single clean high-frequency intercept"
+}
+```
+
+Raw files are still useful: `ingest_results` records their presence so the
+manager can ask for human interpretation or a future parser, but it only treats
+JSON/JSONL summaries as structured measurements.
 
 ---
 

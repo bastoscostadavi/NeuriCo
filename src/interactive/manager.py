@@ -107,6 +107,10 @@ def friendly_tool_echo(name: str, args: Dict[str, Any]) -> Optional[str]:
         return None  # silent — the whiteboard re-renders to reflect the layout
     if name == "run_agent":
         return f"🚀 Launched the {args.get('agent', 'agent')}"
+    if name == "deliver_recipe":
+        return "🧪 Delivered a BatteryLab recipe batch"
+    if name == "ingest_results":
+        return f"📥 Ingested BatteryLab results from {args.get('path', 'BL-results')}"
     return f"🔧 {name}"
 
 
